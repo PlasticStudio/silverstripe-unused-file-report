@@ -158,6 +158,8 @@ class UnusedFileReportBuildTask extends BuildTask
 
                 $insert = SQLInsert::create('"UnusedFileReportDB"');
 
+                $batchCount = 0;
+
                 foreach ($files as $file) {
                     $insert->addRow([
                         'FileID'     => $file,
@@ -165,8 +167,16 @@ class UnusedFileReportBuildTask extends BuildTask
                         'Created'    => $now,
                     ]);
 
-                    $done[$file] = true;
+                    ++$batchCount;
                     ++$count;
+
+                    if ($batchCount >= self::LARGE_QUERY_BATCH_SIZE) {
+                        $insert->execute();
+                        $insert = SQLInsert::create('"UnusedFileReportDB"');
+                        $batchCount = 0;
+                    }
+
+                    $done[$file] = true;
                 }
 
                 if (!$insert->isEmpty()) {
@@ -185,6 +195,8 @@ class UnusedFileReportBuildTask extends BuildTask
             if ($files) {
                 $insert = SQLInsert::create('"UnusedFileReportDB"');
 
+                $batchCount = 0;
+
                 foreach ($files as $file) {
                     if (isset($done[$file])) {
                         continue;
@@ -196,7 +208,14 @@ class UnusedFileReportBuildTask extends BuildTask
                         'Created' => $now,
                     ]);
 
-                    $count++;
+                    ++$batchCount;
+                    ++$count;
+
+                    if ($batchCount >= self::LARGE_QUERY_BATCH_SIZE) {
+                        $insert->execute();
+                        $insert = SQLInsert::create('"UnusedFileReportDB"');
+                        $batchCount = 0;
+                    }
                 }
 
                 if (!$insert->isEmpty()) {
@@ -621,14 +640,26 @@ class UnusedFileReportBuildTask extends BuildTask
         );
     }
 
+    /**
+     * Get IDs of file shortcodes that are not in used files array
+     * Confirm parent record still exists before treating the link as usage
+     * FileLink: Represents a link between a dataobject parent and a file shortcode in a HTML content area
+     * @param array $alreadyFoundIds
+     * @return array 
+     */
     protected function getFileLinkIds(array $alreadyFoundIds): array
     {
-        $fileLinks = FileLink::get()->exclude(['LinkedID' => $alreadyFoundIds]);
         $ids = [];
-        foreach ($fileLinks as $fileLink) {
-            $parent = $fileLink->Parent();
-            if ($parent && $parent->exists()) {
-                $ids[] = $fileLink->ID;
+
+        foreach (array_chunk($alreadyFoundIds, self::LARGE_QUERY_BATCH_SIZE) as $batch) {
+            $fileLinks = FileLink::get()->exclude(['LinkedID' => $batch]);
+
+            foreach ($fileLinks as $fileLink) {
+                $parent = $fileLink->Parent();
+
+                if ($parent && $parent->exists()) {
+                    $ids[] = $fileLink->ID;
+                }
             }
         }
 
