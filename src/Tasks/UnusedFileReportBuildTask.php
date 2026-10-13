@@ -22,6 +22,7 @@ use RobIngram\SilverStripe\UnusedFileReport\Model\UnusedFileReportDB;
 use SilverStripe\Assets\Shortcodes\FileLink;
 use SilverStripe\Core\Injector\Injector;
 use SilverStripe\Core\Manifest\ClassManifest;
+use SilverStripe\Assets\Folder;
 
 /**
  * A task that collects data on unused files
@@ -51,6 +52,12 @@ class UnusedFileReportBuildTask extends BuildTask
      * @var boolean
      */
     private static bool $is_enabled = true;
+
+    /**
+     * 
+     * @var array
+     */
+    private static array $excluded_folders = [];
 
     /**
      * Reference to the SS class manifest
@@ -141,10 +148,22 @@ class UnusedFileReportBuildTask extends BuildTask
         $used             = $this->getUsedFiles();
         $unusedPreviously = UnusedFileReportDB::get()->count();
 
+        // Exclude configured folders and their descendants.
+        $excludedFolderIDs = $this->getExcludedFolderIDs();
+        $excludedCondition = '';
+
+        if ($excludedFolderIDs) {
+            $excludedCondition = sprintf(
+                ' AND ParentID NOT IN (%s)',
+                implode(',', $excludedFolderIDs)
+            );
+        }
+
         if ($used !== []) {
             $query = sprintf(
                 "SELECT ID FROM File WHERE ID NOT IN (%s) AND ClassName != 'SilverStripe\\Assets\\Folder'",
                 implode(',', $used),
+                $excludedCondition,
             );
 
             $files = DB::query($query)->column();
@@ -184,10 +203,11 @@ class UnusedFileReportBuildTask extends BuildTask
                 }
             }
 
-            // remove any which aren't used in live.
+             // remove any which aren't used in live.
             $query = sprintf(
                 "SELECT ID FROM File_Live WHERE ID NOT IN (%s) AND ClassName != 'SilverStripe\\Assets\\Folder'",
                 implode(',', $used),
+                $excludedCondition,
             );
 
             $files = DB::query($query)->column();
@@ -274,6 +294,67 @@ class UnusedFileReportBuildTask extends BuildTask
         $fileLinkIds = $this->getFileLinkIds($usedIds);
         return array_unique(array_merge($usedIds, $fileLinkIds));
     }
+
+    /**
+     * Build list of IDs of folders to exclude from report
+     * 
+     */
+    protected function getExcludedFolderIDs(): array
+    {
+        $paths = Config::inst()->get(
+            static::class,
+            'excluded_folders'
+        ) ?? [];
+
+        if (!$paths) {
+            return [];
+        }
+
+        $parentByID = [];
+        $childrenByParent = [];
+
+        foreach (Folder::get() as $folder) {
+            $id = (int) $folder->ID;
+            $parentID = (int) $folder->ParentID;
+
+            $parentByID[$id] = $parentID;
+            $childrenByParent[$parentID][] = $id;
+        }
+
+        $excludedIDs = [];
+
+        foreach ($paths as $path) {
+            $root = Folder::get()
+                ->filter('Filename', $path)
+                ->first();
+
+            if (!$root) {
+                trigger_error(
+                    "Unused file report: excluded folder not found: {$path}",
+                    E_USER_WARNING
+                );
+                continue;
+            }
+
+            $excludedIDs[] = (int) $root->ID;
+        }
+
+        $pending = $excludedIDs;
+
+        while ($pending) {
+            $parentID = array_pop($pending);
+
+            foreach ($childrenByParent[$parentID] ?? [] as $childID) {
+                if (!in_array($childID, $excludedIDs, true)) {
+                    $excludedIDs[] = $childID;
+                    $pending[] = $childID;
+                }
+            }
+        }
+
+        return array_values(array_unique($excludedIDs));
+    }
+
 
     /**
      * Get all the candidate classes to check for File or Image references.
