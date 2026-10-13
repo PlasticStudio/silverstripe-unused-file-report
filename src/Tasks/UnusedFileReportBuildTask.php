@@ -148,6 +148,9 @@ class UnusedFileReportBuildTask extends BuildTask
         $used = $this->getUsedFiles();
         $unusedPreviously = UnusedFileReportDB::get()->count();
 
+        // Clear the previous report before inserting new results.
+        DB::query('TRUNCATE "UnusedFileReportDB"');
+
         // Exclude configured folders and their descendants.
         $excludedFolderIDs = $this->getExcludedFolderIDs();
         $excludedCondition = '';
@@ -161,7 +164,7 @@ class UnusedFileReportBuildTask extends BuildTask
 
         if ($used !== []) {
             $query = sprintf(
-                "SELECT ID FROM File WHERE ID NOT IN (%s) AND ClassName != 'SilverStripe\\Assets\\Folder'",
+                "SELECT ID FROM File WHERE ID NOT IN (%s) AND ClassName != 'SilverStripe\\Assets\\Folder'%s",
                 implode(',', $used),
                 $excludedCondition,
             );
@@ -173,8 +176,7 @@ class UnusedFileReportBuildTask extends BuildTask
             $now = DBDatetime::now()->Rfc2822();
 
             if ($files) {
-                DB::query('TRUNCATE "UnusedFileReportDB"');
-
+               
                 $insert = SQLInsert::create('"UnusedFileReportDB"');
 
                 $batchCount = 0;
@@ -205,7 +207,7 @@ class UnusedFileReportBuildTask extends BuildTask
 
              // remove any which aren't used in live.
             $query = sprintf(
-                "SELECT ID FROM File_Live WHERE ID NOT IN (%s) AND ClassName != 'SilverStripe\\Assets\\Folder'",
+                "SELECT ID FROM File_Live WHERE ID NOT IN (%s) AND ClassName != 'SilverStripe\\Assets\\Folder'%s",
                 implode(',', $used),
                 $excludedCondition,
             );
@@ -297,64 +299,53 @@ class UnusedFileReportBuildTask extends BuildTask
 
     /**
      * Build list of IDs of folders to exclude from report
-     * 
+     * @return array
      */
     protected function getExcludedFolderIDs(): array
     {
-        $paths = Config::inst()->get(
+        $folderNames = Config::inst()->get(
             static::class,
             'excluded_folders'
         ) ?? [];
 
-        if (!$paths) {
+        if (!$folderNames) {
             return [];
         }
 
-        $parentByID = [];
         $childrenByParent = [];
 
         foreach (Folder::get() as $folder) {
-            $id = (int) $folder->ID;
-            $parentID = (int) $folder->ParentID;
-
-            $parentByID[$id] = $parentID;
-            $childrenByParent[$parentID][] = $id;
+            $childrenByParent[(int) $folder->ParentID][] = (int) $folder->ID;
         }
 
         $excludedIDs = [];
 
-        foreach ($paths as $path) {
-            $root = Folder::get()
-                ->filter('Filename', $path)
-                ->first();
+        foreach ($folderNames as $folderName) {
+            $folder = Folder::get()->filter('Name', $folderName)->first();
 
-            if (!$root) {
-                trigger_error(
-                    "Unused file report: excluded folder not found: {$path}",
-                    E_USER_WARNING
-                );
+            if (!$folder) {
                 continue;
             }
 
-            $excludedIDs[] = (int) $root->ID;
-        }
+            $pending = [(int) $folder->ID];
 
-        $pending = $excludedIDs;
+            while ($pending) {
+                $parentID = array_pop($pending);
 
-        while ($pending) {
-            $parentID = array_pop($pending);
+                if (in_array($parentID, $excludedIDs, true)) {
+                    continue;
+                }
 
-            foreach ($childrenByParent[$parentID] ?? [] as $childID) {
-                if (!in_array($childID, $excludedIDs, true)) {
-                    $excludedIDs[] = $childID;
+                $excludedIDs[] = $parentID;
+
+                foreach ($childrenByParent[$parentID] ?? [] as $childID) {
                     $pending[] = $childID;
                 }
             }
         }
 
-        return array_values(array_unique($excludedIDs));
+        return $excludedIDs;
     }
-
 
     /**
      * Get all the candidate classes to check for File or Image references.
