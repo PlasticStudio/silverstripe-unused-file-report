@@ -54,7 +54,7 @@ class UnusedFileReportBuildTask extends BuildTask
     private static bool $is_enabled = true;
 
     /**
-     * 
+     * Excluded folders, set in yml configuration
      * @var array
      */
     private static array $excluded_folders = [];
@@ -145,7 +145,7 @@ class UnusedFileReportBuildTask extends BuildTask
      */
     public function buildReportTable(PolyOutput $output)
     {
-        $used             = $this->getUsedFiles();
+        $used = $this->getUsedFiles();
         $unusedPreviously = UnusedFileReportDB::get()->count();
 
         // Exclude configured folders and their descendants.
